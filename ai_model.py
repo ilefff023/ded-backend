@@ -1,45 +1,62 @@
-"""
-AI prediction module.
-Currently uses rule-based heuristics (TFOS DEWS II thresholds).
-Replace the body of predict() with joblib.load / model.predict
-when your trained model is ready — the interface stays identical.
-"""
+# ai_model.py  — REPLACE ENTIRELY WITH THIS
+
+import numpy as np
+import joblib
+import tensorflow as tf
+import os
+
+# ── Load models once at startup ──────────────────────────────────────
+_BASE = os.path.dirname(__file__)
+
+_cnn = tf.keras.models.load_model(os.path.join(_BASE, "best_model.h5"))
+_xgb = joblib.load(os.path.join(_BASE, "model.pkl"))
+
+_LABELS = ["normal", "moderate", "severe"]   # adjust if your labels differ
+
+def _build_features(data: dict) -> np.ndarray:
+    """
+    Build the feature vector your models were trained on.
+    Order MUST match your training CSV columns.
+    """
+    temp      = float(data.get("temp", 0))
+    humidity  = float(data.get("humidity", 0))
+    lux       = float(data.get("lux", 0))
+    eye_temp  = float(data.get("eye_temp", 0))
+    blink     = float(data.get("blink_rate", 0))
+    temp_diff = temp - eye_temp
+    blink_norm = blink / 60.0
+    # Matches DED_Final_Sensor_Fusion.csv column order:
+    return np.array([[temp, humidity, lux, eye_temp, blink, temp_diff, blink_norm]])
 
 
 def predict(data: dict) -> dict:
-    temp       = float(data.get("temp",       0))
-    humidity   = float(data.get("humidity",   0))
-    lux        = float(data.get("lux",        0))
-    eye_temp   = float(data.get("eye_temp",   0))
-    blink_rate = float(data.get("blink_rate", 0))
+    features = _build_features(data)
 
-    risk = 0.0
+    # ── XGBoost prediction ──────────────────────────────────────────
+    xgb_pred_idx  = int(_xgb.predict(features)[0])
+    xgb_proba     = _xgb.predict_proba(features)[0]
+    xgb_label     = _LABELS[xgb_pred_idx]
+    xgb_confidence = float(xgb_proba[xgb_pred_idx])
 
-    # Humidity
-    if humidity < 30:    risk += 35
-    elif humidity < 40:  risk += 20
-    elif humidity < 50:  risk += 8
+    # ── CNN prediction ──────────────────────────────────────────────
+    # CNN expects shape (samples, timesteps, features) — adjust if needed
+    cnn_input = features.reshape(1, 1, features.shape[1])
+    cnn_proba = _cnn.predict(cnn_input, verbose=0)[0]
+    cnn_pred_idx = int(np.argmax(cnn_proba))
+    cnn_label = _LABELS[cnn_pred_idx]
+    cnn_confidence = float(cnn_proba[cnn_pred_idx])
 
-    # Luminosity
-    if lux > 700:        risk += 25
-    elif lux > 500:      risk += 12
+    # ── Ensemble: average probabilities ─────────────────────────────
+    ensemble_proba = (xgb_proba + cnn_proba) / 2
+    final_idx = int(np.argmax(ensemble_proba))
+    final_label = _LABELS[final_idx]
+    final_confidence = float(ensemble_proba[final_idx])
 
-    # Eye temperature (normal 34–35.5 °C)
-    if eye_temp < 33.5:  risk += 30
-    elif eye_temp < 34:  risk += 15
-    elif eye_temp > 36:  risk += 8
-
-    # Blink rate (normal 12–20 /min)
-    if blink_rate < 8:   risk += 20
-    elif blink_rate < 12: risk += 10
-    elif blink_rate > 25: risk += 5
-
-    # Ambient temperature
-    if temp > 28 or temp < 18: risk += 5
-
-    if risk >= 55:
-        return {"prediction": "severe",   "confidence": round(min(0.65 + risk / 200, 0.97), 4)}
-    elif risk >= 28:
-        return {"prediction": "moderate", "confidence": round(min(0.55 + risk / 200, 0.90), 4)}
-    else:
-        return {"prediction": "normal",   "confidence": round(min(0.70 + (55 - risk) / 200, 0.97), 4)}
+    return {
+        "prediction":  final_label,
+        "confidence":  round(final_confidence, 4),
+        "cnn_prediction":  cnn_label,
+        "cnn_confidence":  round(cnn_confidence, 4),
+        "xgb_prediction":  xgb_label,
+        "xgb_confidence":  round(xgb_confidence, 4),
+    }
