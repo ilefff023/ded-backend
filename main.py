@@ -10,6 +10,30 @@ import mqtt_client
 
 from typing import Optional
 
+class PatientCreate(BaseModel):
+    name: str
+    dob: Optional[str] = None
+    gender: Optional[str] = None
+    notes: Optional[str] = None
+
+class BlinkPayload(BaseModel):
+    blink_rate: float = Field(..., ge=0, le=100)
+    patient_id: Optional[int] = None   # ADD THIS FIELD
+
+# Add these endpoints
+
+@app.post("/api/patients")
+def create_patient(body: PatientCreate):
+    pid = database.create_patient(body.name, body.dob, body.gender, body.notes)
+    return {"id": pid, "name": body.name}
+
+@app.get("/api/patients")
+def list_patients():
+    return database.get_patients()
+
+@app.get("/api/patients/{patient_id}/history")
+def patient_history(patient_id: int):
+    return [_nested_response(r) for r in database.all_records(patient_id)]
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     database.init()
@@ -134,31 +158,7 @@ def predict_direct(payload: dict):
     p, c = result["prediction"], result["confidence"]
     score = max(10, 40 - round(c*30)) if p=="severe" else max(40, 65-round(c*20)) if p=="moderate" else min(95, 75+round(c*20))
     return {"prediction": p, "class": p, "confidence": c, "score": score}
-# Add these imports at the top
 
 
-# Add these schemas
-class PatientCreate(BaseModel):
-    name: str
-    dob: Optional[str] = None
-    gender: Optional[str] = None
-    notes: Optional[str] = None
 
-class BlinkPayload(BaseModel):
-    blink_rate: float = Field(..., ge=0, le=100)
-    patient_id: Optional[int] = None   # ADD THIS FIELD
 
-# Add these endpoints
-
-@app.post("/api/patients")
-def create_patient(body: PatientCreate):
-    pid = database.create_patient(body.name, body.dob, body.gender, body.notes)
-    return {"id": pid, "name": body.name}
-
-@app.get("/api/patients")
-def list_patients():
-    return database.get_patients()
-
-@app.get("/api/patients/{patient_id}/history")
-def patient_history(patient_id: int):
-    return [_nested_response(r) for r in database.all_records(patient_id)]
